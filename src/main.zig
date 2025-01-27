@@ -2,6 +2,7 @@ const std = @import("std");
 const token = @import("token.zig");
 const repl = @import("repl.zig");
 const Lexer = @import("lexer.zig").Lexer;
+const Parser = @import("parser.zig").Parser;
 
 pub fn main() !void {
     const stdin = std.io.getStdIn().reader();
@@ -54,6 +55,7 @@ pub fn printOutput() !void {
 }
 
 const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
 
 test "try readNextToken" {
     const input = "==";
@@ -63,4 +65,11 @@ test "try readNextToken" {
     const tag = @tagName(tok);
 
     try expect(std.mem.eql(u8, tag, "equal"));
+}
+
+test "test parser" {
+    var lexer = Lexer.new(";;");
+    const parser = Parser.new(&lexer, std.testing.allocator);
+    try expectEqual(token.Token.semicolon, parser.cur_token);
+    try expectEqual(token.Token.semicolon, parser.peek_token);
 }
