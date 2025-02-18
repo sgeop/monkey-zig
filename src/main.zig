@@ -8,8 +8,13 @@ pub fn main() !void {
     const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
 
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
     try stdout.print("Hello, welcome to the monkey language", .{});
-    repl.start(stdin, stdout);
+    try repl.start(stdin, stdout, arena.allocator());
 }
 
 pub fn printOutput() !void {
@@ -57,6 +62,10 @@ pub fn printOutput() !void {
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 
+test {
+    std.testing.refAllDeclsRecursive(@This());
+}
+
 test "try readNextToken" {
     const input = "==";
     var lexer = Lexer.new(input);
@@ -65,11 +74,4 @@ test "try readNextToken" {
     const tag = @tagName(tok);
 
     try expect(std.mem.eql(u8, tag, "equal"));
-}
-
-test "test parser" {
-    var lexer = Lexer.new(";;");
-    const parser = Parser.new(&lexer, std.testing.allocator);
-    try expectEqual(token.Token.semicolon, parser.cur_token);
-    try expectEqual(token.Token.semicolon, parser.peek_token);
 }
