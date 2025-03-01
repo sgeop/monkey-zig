@@ -40,7 +40,7 @@ const Precedence = enum(u8) {
 
     fn fromToken(token: Token) Precedence {
         return switch (token) {
-            .equal, .notEqual => .equals,
+            .equal, .not_equal => .equals,
             .lt, .gt => .lessgreater,
             .plus, .minus => .sum,
             .slash, .asterisk => .product,
@@ -59,7 +59,7 @@ fn getOperatorFromToken(token: Token) !ast.Operator {
         .asterisk => .asterisk,
         .slash => .slash,
         .equal => .equal,
-        .notEqual => .notEqual,
+        .not_equal => .not_equal,
         .lt => .lt,
         .gt => .gt,
         else => ParseError.ExpectedOperator,
@@ -146,9 +146,9 @@ pub const Parser = struct {
             else => {},
         }
 
-        const expressionPtr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
-        expressionPtr.* = expression;
-        return ast.Let{ .name = name, .value = expressionPtr };
+        const expression_ptr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
+        expression_ptr.* = expression;
+        return ast.Let{ .name = name, .value = expression_ptr };
     }
 
     fn parseExpressionTest(self: *Self, precedence: Precedence) ParseError!ast.Expression {
@@ -164,9 +164,9 @@ pub const Parser = struct {
             self.nextToken();
         }
 
-        const returnValuePtr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
-        returnValuePtr.* = returnValue;
-        return ast.Return{ .value = returnValuePtr };
+        const return_value_ptr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
+        return_value_ptr.* = returnValue;
+        return ast.Return{ .value = return_value_ptr };
     }
 
     fn parseBlockStatement(self: *Self) ParseError!ast.Block {
@@ -188,20 +188,19 @@ pub const Parser = struct {
             self.nextToken();
         }
 
-        const expressionPtr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
-        expressionPtr.* = expression;
-        return ast.ExpressionStatement{ .expression = expressionPtr };
+        const expression_ptr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
+        expression_ptr.* = expression;
+        return ast.ExpressionStatement{ .expression = expression_ptr };
     }
 
     fn parseExpression(self: *Self, precedence: Precedence) ParseError!ast.Expression {
-        // TODO: replace with var
         var leftExpression = try self.parseExpressionByPrefixToken(self.cur_token);
 
         while (!self.peekTokenIs(.semicolon) and precedence.lessThan(Precedence.fromToken(self.peek_token))) {
-            const leftExpressionPtr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
-            leftExpressionPtr.* = leftExpression;
+            const left_expression_ptr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
+            left_expression_ptr.* = leftExpression;
 
-            leftExpression = try self.parseInfixExpressionByToken(self.peek_token, leftExpressionPtr);
+            leftExpression = try self.parseInfixExpressionByToken(self.peek_token, left_expression_ptr);
         }
 
         return leftExpression;
@@ -241,10 +240,10 @@ pub const Parser = struct {
         self.nextToken();
 
         const right = try self.parseExpression(.prefix);
-        const rightPtr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
-        rightPtr.* = right;
+        const right_ptr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
+        right_ptr.* = right;
 
-        return ast.PrefixExpression{ .operator = op, .right = rightPtr };
+        return ast.PrefixExpression{ .operator = op, .right = right_ptr };
     }
 
     fn parseInfixExpression(self: *Self, left: *ast.Expression) ParseError!ast.InfixExpression {
@@ -254,10 +253,10 @@ pub const Parser = struct {
         self.nextToken();
 
         const right = try self.parseExpression(precedence);
-        const rightPtr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
-        rightPtr.* = right;
+        const right_ptr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
+        right_ptr.* = right;
 
-        return ast.InfixExpression{ .operator = op, .left = left, .right = rightPtr };
+        return ast.InfixExpression{ .operator = op, .left = left, .right = right_ptr };
     }
 
     fn parseIfExpression(self: *Self) ParseError!ast.If {
@@ -265,21 +264,21 @@ pub const Parser = struct {
         self.nextToken();
 
         const condition = try self.parseExpression(.lowest);
-        const conditionPtr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
-        conditionPtr.* = condition;
+        const condition_ptr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
+        condition_ptr.* = condition;
 
         try self.expectPeek(.rparen);
         try self.expectPeek(.lbrace);
 
-        const thenBlock = try self.parseBlockStatement();
-        var elseBlock: ?ast.Block = null;
+        const then_block = try self.parseBlockStatement();
+        var else_block: ?ast.Block = null;
         if (self.peekTokenIs(.else_)) {
             self.nextToken();
             try self.expectPeek(.lbrace);
-            elseBlock = try self.parseBlockStatement();
+            else_block = try self.parseBlockStatement();
         }
 
-        return ast.If{ .condition = conditionPtr, .thenBranch = thenBlock, .elseBranch = elseBlock };
+        return ast.If{ .condition = condition_ptr, .then_branch = then_block, .else_branch = else_block };
     }
 
     fn parseFunctionLiteral(self: *Self) ParseError!ast.Function {
@@ -351,7 +350,7 @@ pub const Parser = struct {
     fn parseInfixExpressionByToken(self: *Self, token: TokenTag, left: *ast.Expression) ParseError!ast.Expression {
         self.nextToken();
         return switch (token) {
-            .plus, .minus, .asterisk, .slash, .equal, .notEqual, .gt, .lt => ast.Expression{ .infix_expression = try self.parseInfixExpression(left) },
+            .plus, .minus, .asterisk, .slash, .equal, .not_equal, .gt, .lt => ast.Expression{ .infix_expression = try self.parseInfixExpression(left) },
             .lparen => ast.Expression{ .call = try self.parseCallExpression(left) },
             else => ParseError.InvalidInfix,
         };
@@ -361,10 +360,10 @@ pub const Parser = struct {
     //     var leftExpression = try self.parseExpressionByPrefixToken(self.cur_token);
 
     //     while (!self.peekTokenIs(.semicolon) and precedence.lessThan(Precedence.fromToken(self.peek_token))) {
-    //         const leftExpressionPtr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
-    //         leftExpressionPtr.* = leftExpression;
+    //         const left_expression_ptr = self.allocator.create(ast.Expression) catch return ParseError.AllocFailed;
+    //         left_expression_ptr.* = leftExpression;
     //
-    //         leftExpression = try self.parseInfixExpressionByToken(self.peek_token, leftExpressionPtr);
+    //         leftExpression = try self.parseInfixExpressionByToken(self.peek_token, left_expression_ptr);
     //     }
 
     //     return leftExpression;

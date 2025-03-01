@@ -158,17 +158,17 @@ pub const Function = struct {
 
 pub const If = struct {
     condition: *Expression,
-    thenBranch: Block,
-    elseBranch: ?Block,
+    then_branch: Block,
+    else_branch: ?Block,
 
     pub fn printStr(self: *If, writer: anytype) @TypeOf(writer).Error!void {
         try writer.print("if ", .{});
         try self.condition.printStr(writer);
         try writer.print(" ", .{});
-        try self.thenBranch.printStr(writer);
-        if (self.elseBranch) |*elseBranch| {
+        try self.then_branch.printStr(writer);
+        if (self.else_branch) |*else_branch| {
             try writer.print(" else ", .{});
-            try elseBranch.printStr(writer);
+            try else_branch.printStr(writer);
         }
     }
 };
@@ -227,7 +227,7 @@ pub const Operator = enum {
     asterisk,
     slash,
     equal,
-    notEqual,
+    not_equal,
     lt,
     gt,
 
@@ -240,7 +240,7 @@ pub const Operator = enum {
             .asterisk => "*",
             .slash => "/",
             .equal => "==",
-            .notEqual => "!=",
+            .not_equal => "!=",
             .lt => "<",
             .gt => ">",
         };

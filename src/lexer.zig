@@ -50,7 +50,7 @@ pub const Lexer = struct {
             '!' => blk: {
                 if (self.peekCharIs('=')) {
                     self.readChar();
-                    break :blk token.Token.notEqual;
+                    break :blk token.Token.not_equal;
                 }
                 break :blk token.Token.bang;
             },
@@ -100,7 +100,7 @@ pub const Lexer = struct {
             if (self.peekCharIs('=')) {
                 self.readChar();
                 self.readChar();
-                return token.Token.notEqual;
+                return token.Token.not_equal;
             }
             self.readChar();
             return token.Token.bang;
@@ -383,7 +383,7 @@ test "lexer" {
     );
     try expectEqual(token.Token.semicolon, lexer.nextToken());
     try expectInt("10", lexer.nextToken());
-    try expectEqual(token.Token.notEqual, lexer.nextToken());
+    try expectEqual(token.Token.not_equal, lexer.nextToken());
     try expectInt("9", lexer.nextToken());
     try expectEqual(token.Token.semicolon, lexer.nextToken());
 }

@@ -19,7 +19,7 @@ pub const TokenTag = enum {
     gt,
 
     equal,
-    notEqual,
+    not_equal,
 
     // delimiters
     comma,
@@ -60,7 +60,7 @@ pub const Token = union(TokenTag) {
     gt: void,
 
     equal: void,
-    notEqual: void,
+    not_equal: void,
 
     // delimiters
     comma: void,
