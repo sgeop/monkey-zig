@@ -3,8 +3,8 @@ const ast = @import("ast.zig");
 const object = @import("object.zig");
 const builtin = @import("builtin.zig");
 
-pub const EvaluatorError = error{
-    AllocFailed,
+pub const RuntimeError = error{
+    OutOfMemory,
     IllegalValue,
     TypeMismatch,
     NotImplemented,
@@ -19,7 +19,7 @@ pub const Evaluator = struct {
         return .{ .allocator = allocator };
     }
 
-    pub fn eval(self: *Self, node: ast.Node) EvaluatorError!*object.Object {
+    pub fn eval(self: *Self, node: ast.Node) RuntimeError!*object.Object {
         switch (node) {
             .program => |program| return try self.evalProgram(program),
             .statement => |statement| return try self.evalStatement(statement),
@@ -27,7 +27,7 @@ pub const Evaluator = struct {
         }
     }
 
-    pub fn evalProgram(self: *Self, program: *ast.Program) EvaluatorError!*object.Object {
+    pub fn evalProgram(self: *Self, program: *ast.Program) RuntimeError!*object.Object {
         var result: *object.Object = &builtin.NULL_OBJECT;
         var i: usize = 0;
         while (i < program.statements.items.len) : (i += 1) {
@@ -41,13 +41,13 @@ pub const Evaluator = struct {
         return result;
     }
 
-    pub fn evalStatement(self: *Self, statement: *ast.Statement) EvaluatorError!*object.Object {
+    pub fn evalStatement(self: *Self, statement: *ast.Statement) RuntimeError!*object.Object {
         switch (statement.*) {
             .expression_statement => |expression_statement| return self.evalExpression(expression_statement.expression),
             .return_ => |return_| {
                 const value = try self.evalExpression(return_.value);
 
-                const obj = self.allocator.create(object.Object) catch return EvaluatorError.AllocFailed;
+                const obj = self.allocator.create(object.Object) catch return RuntimeError.OutOfMemory;
                 obj.* = object.Object{
                     .return_ = object.Return{
                         .value = value,
@@ -56,11 +56,11 @@ pub const Evaluator = struct {
 
                 return obj;
             },
-            else => return EvaluatorError.IllegalValue,
+            else => return RuntimeError.IllegalValue,
         }
     }
 
-    pub fn evalExpression(self: *Self, expression: *ast.Expression) EvaluatorError!*object.Object {
+    pub fn evalExpression(self: *Self, expression: *ast.Expression) RuntimeError!*object.Object {
         switch (expression.*) {
             .integer => |integer| {
                 const obj = object.Integer.create(self.allocator, integer.value);
@@ -78,11 +78,11 @@ pub const Evaluator = struct {
                 return try self.evalInfixExpression(&infix_expression.operator, left, right);
             },
             .if_ => |*if_| return try self.evalIfExpression(if_),
-            else => return EvaluatorError.IllegalValue,
+            else => return RuntimeError.IllegalValue,
         }
     }
 
-    fn evalBlock(self: *Self, block: *ast.Block) EvaluatorError!*object.Object {
+    fn evalBlock(self: *Self, block: *ast.Block) RuntimeError!*object.Object {
         var result: *object.Object = &builtin.NULL_OBJECT;
         var i: usize = 0;
         while (i < block.statements.items.len) : (i += 1) {
@@ -92,7 +92,7 @@ pub const Evaluator = struct {
         return result;
     }
 
-    fn evalIfExpression(self: *Self, ifexp: *ast.If) EvaluatorError!*object.Object {
+    fn evalIfExpression(self: *Self, ifexp: *ast.If) RuntimeError!*object.Object {
         const condition = try self.evalExpression(ifexp.*.condition);
 
         if (isTruthy(condition)) {
@@ -104,28 +104,28 @@ pub const Evaluator = struct {
         }
     }
 
-    fn evalPrefixExpression(self: *Self, operator: ast.Operator, right: *object.Object) EvaluatorError!*object.Object {
+    fn evalPrefixExpression(self: *Self, operator: ast.Operator, right: *object.Object) RuntimeError!*object.Object {
         switch (operator) {
             .bang => return evalBangOperatorExpression(right),
             .minus => return try self.evalMinusPrefixOperatorExpression(right),
-            else => return EvaluatorError.NotImplemented,
+            else => return RuntimeError.NotImplemented,
         }
     }
 
-    fn evalInfixExpression(self: *Self, operator: *const ast.Operator, left: *object.Object, right: *object.Object) EvaluatorError!*object.Object {
+    fn evalInfixExpression(self: *Self, operator: *const ast.Operator, left: *object.Object, right: *object.Object) RuntimeError!*object.Object {
         switch (left.*) {
             .integer => |left_int| switch (right.*) {
                 .integer => |right_int| return try self.evalIntegerInfixExpression(operator, &left_int, &right_int),
-                else => return EvaluatorError.TypeMismatch,
+                else => return RuntimeError.TypeMismatch,
             },
-            else => return EvaluatorError.NotImplemented,
+            else => return RuntimeError.NotImplemented,
         }
     }
 
-    fn evalMinusPrefixOperatorExpression(self: *Self, right: *object.Object) EvaluatorError!*object.Object {
+    fn evalMinusPrefixOperatorExpression(self: *Self, right: *object.Object) RuntimeError!*object.Object {
         switch (right.*) {
-            .integer => |integer| return object.Integer.create(self.allocator, -integer.value) catch return EvaluatorError.AllocFailed,
-            else => return EvaluatorError.NotImplemented,
+            .integer => |integer| return object.Integer.create(self.allocator, -integer.value) catch return RuntimeError.OutOfMemory,
+            else => return RuntimeError.NotImplemented,
         }
     }
 
@@ -134,7 +134,7 @@ pub const Evaluator = struct {
         operator: *const ast.Operator,
         left: *const object.Integer,
         right: *const object.Integer,
-    ) EvaluatorError!*object.Object {
+    ) RuntimeError!*object.Object {
         switch (operator.*) {
             .plus => return object.Integer.create(self.allocator, left.*.value + right.*.value),
             .minus => return object.Integer.create(self.allocator, left.*.value - right.*.value),
@@ -144,7 +144,7 @@ pub const Evaluator = struct {
             .gt => return nativeBoolToBooleanObject(left.*.value > right.*.value),
             .equal => return nativeBoolToBooleanObject(left.*.value == right.*.value),
             .not_equal => return nativeBoolToBooleanObject(left.*.value != right.*.value),
-            else => return EvaluatorError.NotImplemented,
+            else => return RuntimeError.NotImplemented,
         }
     }
 
@@ -224,7 +224,6 @@ test "Evaluate integers" {
 
     for (test_ints) |v| {
         const actual = try testEvaluate(v.input, arena.allocator());
-        std.debug.print("expecting int {d} for object {any}\n", .{ v.expected, actual });
         try expectInteger(v.expected, actual);
     }
     // switch (result.*) {
@@ -245,7 +244,6 @@ test "Evaluate booleans" {
     for (test_boolean) |v| {
         // try testval.evalExpect(arena.allocator());
         const actual = try testEvaluate(v.input, arena.allocator());
-        std.debug.print("expected {any} got {any}\n", .{ v.expected, actual });
         try expectBoolean(v.expected, actual);
     }
 }
@@ -264,7 +262,6 @@ test "Evaluate return stmt" {
 
     for (test_return_ints) |v| {
         const actual = try testEvaluate(v.input, arena.allocator());
-        std.debug.print("expected {any} got {any}\n", .{ v.expected, actual });
         try expectInteger(v.expected, actual);
     }
 }

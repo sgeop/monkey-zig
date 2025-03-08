@@ -1,5 +1,5 @@
 const std = @import("std");
-const AllocFailed = @import("evaluator.zig").EvaluatorError.AllocFailed;
+const RuntimeError = @import("evaluator.zig").RuntimeError;
 
 pub const Object = union(enum) {
     integer: Integer,
@@ -47,7 +47,7 @@ pub const Integer = struct {
     }
 
     pub fn create(allocator: std.mem.Allocator, value: i64) !*Object {
-        const object = allocator.create(Object) catch return AllocFailed;
+        const object = allocator.create(Object) catch return RuntimeError.OutOfMemory;
         object.* = Object{
             .integer = Integer.new(value),
         };
@@ -67,7 +67,7 @@ pub const Boolean = struct {
     }
 
     pub fn create(allocator: std.mem.Allocator, value: bool) !*Object {
-        const object = allocator.create(Object) catch return AllocFailed;
+        const object = allocator.create(Object) catch return RuntimeError.OutOfMemory;
         object.* = Object{
             .integer = Boolean.new(value),
         };
