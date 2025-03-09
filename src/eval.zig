@@ -1,7 +1,14 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const Object = @import("value.zig").Object;
-const RuntimeError = @import("evaluator.zig").RuntimeError;
+const Environment = @import("environment.zig").Environment;
+
+pub const RuntimeError = error{
+    OutOfMemory,
+    IllegalValue,
+    TypeMismatch,
+    NotImplemented,
+};
 
 pub const Evaluator = struct {
     allocator: std.mem.Allocator,
@@ -12,18 +19,18 @@ pub const Evaluator = struct {
         return .{ .allocator = allocator };
     }
 
-    pub fn eval(self: *Self, node: ast.Node) RuntimeError!*Object {
+    pub fn eval(self: *Self, node: ast.Node, env: *Environment) RuntimeError!*Object {
         switch (node) {
-            .program => |program| return try self.evalProgram(program),
-            .statement => |statement| return try self.evalStatement(statement),
-            .expression => |expression| return try self.evalExpression(expression),
+            .program => |program| return try self.evalProgram(program, env),
+            .statement => |statement| return try self.evalStatement(statement, env),
+            .expression => |expression| return try self.evalExpression(expression, env),
         }
     }
 
-    pub fn evalProgram(self: *Self, program: *ast.Program) RuntimeError!*Object {
+    pub fn evalProgram(self: *Self, program: *ast.Program, env: *Environment) RuntimeError!*Object {
         var result: *Object = Object.Null;
         for (program.statements.items) |*statement| {
-            const evaluated = try self.evalStatement(statement);
+            const evaluated = try self.evalStatement(statement, env);
             switch (evaluated.*) {
                 .return_ => |return_| return return_,
                 .error_ => return evaluated,
@@ -34,21 +41,31 @@ pub const Evaluator = struct {
         return result;
     }
 
-    pub fn evalStatement(self: *Self, statement: *ast.Statement) RuntimeError!*Object {
+    pub fn evalStatement(self: *Self, statement: *ast.Statement, env: *Environment) RuntimeError!*Object {
         switch (statement.*) {
-            .expression_statement => |expression_statement| return self.evalExpression(expression_statement.expression),
+            .expression_statement => |expression_statement| return self.evalExpression(expression_statement.expression, env),
+            .let => |let| {
+                const value = try self.evalExpression(let.value, env);
+                switch (value.*) {
+                    .error_ => return value,
+                    else => {},
+                }
+
+                try env.set(let.name.value, value);
+                return Object.Null;
+            },
+            .block => |*block| return self.evalBlock(block, env),
             .return_ => |return_| {
-                const result = try self.evalExpression(return_.value);
+                const result = try self.evalExpression(return_.value, env);
                 return Object.new(self.allocator, Object{ .return_ = result });
             },
-            else => return RuntimeError.IllegalValue,
         }
     }
 
-    fn evalBlock(self: *Self, block: *ast.Block) RuntimeError!*Object {
+    fn evalBlock(self: *Self, block: *ast.Block, env: *Environment) RuntimeError!*Object {
         var result: *Object = Object.Null;
         for (block.statements.items) |*statement| {
-            const evaluated = try self.evalStatement(statement);
+            const evaluated = try self.evalStatement(statement, env);
             switch (evaluated.*) {
                 .return_, .error_ => return evaluated,
                 else => result = evaluated,
@@ -58,34 +75,61 @@ pub const Evaluator = struct {
         return result;
     }
 
-    pub fn evalExpression(self: *Self, expression: *ast.Expression) RuntimeError!*Object {
+    pub fn evalExpression(self: *Self, expression: *ast.Expression, env: *Environment) RuntimeError!*Object {
         switch (expression.*) {
             .integer => |integer| return Object.new(self.allocator, Object{ .integer = integer.value }),
             .boolean => |boolean| return Object.new(self.allocator, Object{ .boolean = boolean.value }),
+            .identifier => |identifier| return try self.evalIdentifier(&identifier, env),
             .prefix_expression => |prefix_expression| {
-                const right = try self.evalExpression(prefix_expression.right);
+                const right = try self.evalExpression(prefix_expression.right, env);
                 return self.evalPrefixExpression(prefix_expression.operator, right);
             },
             .infix_expression => |infix_expression| {
-                const right = try self.evalExpression(infix_expression.right);
-                const left = try self.evalExpression(infix_expression.left);
-                return self.evalInfixExpression(&infix_expression.operator, left, right);
+                const left = try self.evalExpression(infix_expression.left, env);
+                if (left.isError()) {
+                    return left;
+                }
+
+                const right = try self.evalExpression(infix_expression.right, env);
+                if (right.isError()) {
+                    return right;
+                }
+
+                return try self.evalInfixExpression(&infix_expression.operator, left, right);
             },
-            .if_ => |*if_| return self.evalIfExpression(if_),
+            .if_ => |*if_| return self.evalIfExpression(if_, env),
             else => return RuntimeError.NotImplemented,
         }
     }
 
-    pub fn evalIfExpression(self: *Self, if_expr: *ast.If) RuntimeError!*Object {
-        const condition = try self.evalExpression(if_expr.*.condition);
+    pub fn evalIfExpression(self: *Self, if_expr: *ast.If, env: *Environment) RuntimeError!*Object {
+        const condition = try self.evalExpression(if_expr.*.condition, env);
 
         if (isTruthy(condition)) {
-            return self.evalBlock(&if_expr.*.then_branch);
+            return self.evalBlock(&if_expr.*.then_branch, env);
         } else if (if_expr.*.else_branch) |*else_branch| {
-            return self.evalBlock(else_branch);
+            return self.evalBlock(else_branch, env);
         } else {
             return Object.Null;
         }
+    }
+
+    pub fn evalIdentifier(self: *Self, identifier: *const ast.Identifier, env: *Environment) RuntimeError!*Object {
+        const value = env.get(identifier.*.value);
+        if (value) |val| {
+            return val;
+        }
+
+        var identifiers = std.ArrayList(u8).init(self.allocator);
+        var writer = identifiers.writer();
+        var it = env.*.scope.iterator();
+        while (it.next()) |kv| {
+            try writer.print("Key: {s} Value: ", .{kv.key_ptr.*});
+            try kv.value_ptr.*.repr(writer);
+            try writer.print("\n", .{});
+        }
+
+        return self.newError("identifier not found: {s} in... {s}", .{ identifier.*.value, identifiers.items });
     }
 
     pub fn evalPrefixExpression(self: *Self, operator: ast.Operator, right: *Object) RuntimeError!*Object {
@@ -171,8 +215,9 @@ fn evaluate(input: []const u8, allocator: std.mem.Allocator) !*Object {
     var parser = Parser.new(&lexer, allocator);
     var program = try parser.parseProgram();
     var evaluator = Evaluator.new(allocator);
+    var env = Environment.new(allocator);
 
-    return evaluator.evalProgram(&program);
+    return evaluator.evalProgram(&program, &env);
 }
 
 test "evaluate expressions" {
@@ -219,10 +264,12 @@ test "evaluate let statements" {
     const values: []const struct { input: []const u8, expected: Object } = &.{
         .{ .input = "let a = 5; a;", .expected = .{ .integer = 5 } },
         .{ .input = "let a = 5 * 5; a;", .expected = .{ .integer = 25 } },
+        .{ .input = "let a = 5; let b = a + 1; b * 2;", .expected = .{ .integer = 12 } },
     };
 
     for (values) |value| {
         const actual = try evaluate(value.input, arena.allocator());
+        std.debug.print("input: {s}, expecting: {}, actual {}\n", .{ value.input, value.expected, actual });
         try std.testing.expect(actual.compare(value.expected));
     }
 }

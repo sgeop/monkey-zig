@@ -1,5 +1,5 @@
 const std = @import("std");
-const RuntimeError = @import("evaluator.zig").RuntimeError;
+const RuntimeError = @import("eval.zig").RuntimeError;
 
 pub const Object = union(enum) {
     integer: i64,
@@ -66,6 +66,13 @@ pub const Object = union(enum) {
                 else => false,
             },
             else => @panic("illegal comparison"),
+        };
+    }
+
+    pub fn isError(self: Object) bool {
+        return switch (self) {
+            .error_ => true,
+            else => false,
         };
     }
 };

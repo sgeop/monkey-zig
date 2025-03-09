@@ -2,12 +2,16 @@ const std = @import("std");
 const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("token.zig").Token;
 const Parser = @import("parser.zig").Parser;
+const Environment = @import("environment.zig").Environment;
+const Evaluator = @import("eval.zig").Evaluator;
 
 const PROMPT = ">> ";
 
 var line_buf: [65536]u8 = undefined;
 
 pub fn start(reader: anytype, writer: anytype, allocator: std.mem.Allocator) !void {
+    var env = Environment.new(allocator);
+    var evaluator = Evaluator.new(allocator);
     while (true) {
         writer.print("{s}", .{PROMPT}) catch unreachable;
         // const line = (reader.readUntilDelimiterOrEof(&line_buf, '\n') catch unreachable) orelse break;
@@ -27,9 +31,20 @@ pub fn start(reader: anytype, writer: anytype, allocator: std.mem.Allocator) !vo
                 continue;
             };
 
-            try writer.print("\nGot: ", .{});
-            try program.printStr(writer);
-            try writer.print("\n", .{});
+            const object = evaluator.evalProgram(&program, &env) catch |err| {
+                try writer.print("Evaluation error: {}\n", .{err});
+                continue;
+            };
+            switch (object.*) {
+                .error_ => |msg| {
+                    try writer.print("Error: {s}\n", .{msg});
+                },
+                else => {
+                    try writer.print("\nGot: ", .{});
+                    try object.repr(writer);
+                    try writer.print("\n", .{});
+                },
+            }
         } else {
             break;
         }
