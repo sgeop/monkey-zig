@@ -51,7 +51,9 @@ pub const Evaluator = struct {
                     else => {},
                 }
 
-                try env.set(let.name.value, value);
+                const ident = std.fmt.allocPrint(self.allocator, "{s}", .{let.name.value}) catch return RuntimeError.OutOfMemory;
+
+                try env.set(ident, value);
                 return Object.Null;
             },
             .block => |*block| return self.evalBlock(block, env),
@@ -98,7 +100,27 @@ pub const Evaluator = struct {
                 return try self.evalInfixExpression(&infix_expression.operator, left, right);
             },
             .if_ => |*if_| return self.evalIfExpression(if_, env),
-            else => return RuntimeError.NotImplemented,
+            .function => |*function| return self.newFunction(function.parameters, &function.body, env),
+            .call => |*call| {
+                const function = try self.evalExpression(call.callee, env);
+                switch (function.*) {
+                    .error_ => return function,
+                    else => {},
+                }
+
+                var args = std.ArrayList(*Object).init(self.allocator);
+                for (call.arguments.items) |*arg| {
+                    const evaled = try self.evalExpression(arg, env);
+                    switch (evaled.*) {
+                        .error_ => return evaled,
+                        else => {},
+                    }
+
+                    args.append(evaled) catch return RuntimeError.OutOfMemory;
+                }
+
+                return try self.applyFunction(function, args);
+            },
         }
     }
 
@@ -121,8 +143,10 @@ pub const Evaluator = struct {
         }
 
         var identifiers = std.ArrayList(u8).init(self.allocator);
+        defer identifiers.deinit();
+
         var writer = identifiers.writer();
-        var it = env.*.scope.iterator();
+        var it = env.*.store.iterator();
         while (it.next()) |kv| {
             try writer.print("Key: {s} Value: ", .{kv.key_ptr.*});
             try kv.value_ptr.*.repr(writer);
@@ -130,6 +154,38 @@ pub const Evaluator = struct {
         }
 
         return self.newError("identifier not found: {s} in... {s}", .{ identifier.*.value, identifiers.items });
+    }
+
+    pub fn applyFunction(self: *Self, function: *Object, arguments: std.ArrayList(*Object)) !*Object {
+        switch (function.*) {
+            .function => |*func| {
+                if (func.parameters.items.len != arguments.items.len) {
+                    return self.newError(
+                        "Wrong number of arguments: expected={} got={}",
+                        .{ func.parameters.items.len, arguments.items.len },
+                    );
+                }
+
+                const extended_env = try self.extendFunctionEnv(func, arguments);
+                const evaled = try self.evalBlock(func.body, extended_env);
+
+                return switch (evaled.*) {
+                    .return_ => |return_val| return_val,
+                    else => evaled,
+                };
+            },
+            else => return self.newError("Not a function: {s}", .{function.typeName()}),
+        }
+    }
+
+    fn extendFunctionEnv(self: Self, function: *Object.Function, arguments: std.ArrayList(*Object)) RuntimeError!*Environment {
+        const env = self.allocator.create(Environment) catch return RuntimeError.OutOfMemory;
+        env.* = Environment.newEnclosed(self.allocator, function.*.env);
+        for (function.parameters.items, 0..) |param, i| {
+            try env.set(param.value, arguments.items[i]);
+        }
+
+        return env;
     }
 
     pub fn evalPrefixExpression(self: *Self, operator: ast.Operator, right: *Object) RuntimeError!*Object {
@@ -204,6 +260,14 @@ pub const Evaluator = struct {
         const message = std.fmt.allocPrint(self.allocator, fmt, args) catch return RuntimeError.OutOfMemory;
         return Object.new(self.allocator, Object{ .error_ = message });
     }
+
+    fn newFunction(self: *Self, parameters: std.ArrayList(ast.Identifier), body: *ast.Block, env: *Environment) RuntimeError!*Object {
+        const function_ptr = self.allocator.create(Object) catch return RuntimeError.OutOfMemory;
+        function_ptr.* = Object{
+            .function = Object.Function{ .parameters = parameters, .body = body, .env = env },
+        };
+        return function_ptr;
+    }
 };
 
 //////////////// TESTS ////////////////
@@ -265,6 +329,31 @@ test "evaluate let statements" {
         .{ .input = "let a = 5; a;", .expected = .{ .integer = 5 } },
         .{ .input = "let a = 5 * 5; a;", .expected = .{ .integer = 25 } },
         .{ .input = "let a = 5; let b = a + 1; b * 2;", .expected = .{ .integer = 12 } },
+    };
+
+    for (values) |value| {
+        const actual = try evaluate(value.input, arena.allocator());
+        std.debug.print("input: {s}, expecting: {}, actual {}\n", .{ value.input, value.expected, actual });
+        try std.testing.expect(actual.compare(value.expected));
+    }
+}
+
+test "evaluate functions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const input = "fn(x) { x + 2; };";
+    const evaled = try evaluate(input, arena.allocator());
+
+    try std.testing.expect(std.mem.eql(u8, evaled.typeName(), "function"));
+
+    var buf = std.ArrayList(u8).init(arena.allocator());
+    try evaled.function.print(buf.writer());
+
+    std.debug.print("input: {s}, evaluated {s}\n", .{ input, buf.items });
+
+    const values: []const struct { input: []const u8, expected: Object } = &.{
+        .{ .input = "let double = fn(x) { x * 2; }; double(10);", .expected = .{ .integer = 20 } },
     };
 
     for (values) |value| {

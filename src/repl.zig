@@ -8,6 +8,7 @@ const Evaluator = @import("eval.zig").Evaluator;
 const PROMPT = ">> ";
 
 var line_buf: [65536]u8 = undefined;
+var buf_offset: usize = 0;
 
 pub fn start(reader: anytype, writer: anytype, allocator: std.mem.Allocator) !void {
     var env = Environment.new(allocator);
@@ -23,7 +24,8 @@ pub fn start(reader: anytype, writer: anytype, allocator: std.mem.Allocator) !vo
         //     }
         //     writer.print("{any}\n", .{token}) catch unreachable;
         // }
-        if (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
+        if (try reader.readUntilDelimiterOrEof(line_buf[buf_offset..], '\n')) |line| {
+            buf_offset += line.len;
             var lexer = Lexer.new(line);
             var parser = Parser.new(&lexer, allocator);
             var program = parser.parseProgram() catch |err| {

@@ -1,4 +1,7 @@
 const std = @import("std");
+
+const ast = @import("ast.zig");
+const Environment = @import("environment.zig").Environment;
 const RuntimeError = @import("eval.zig").RuntimeError;
 
 pub const Object = union(enum) {
@@ -7,6 +10,7 @@ pub const Object = union(enum) {
     null_,
     return_: *Object,
     error_: []const u8,
+    function: Function,
 
     var null_object = Object{ .null_ = {} };
     var true_object = Object{ .boolean = true };
@@ -15,6 +19,23 @@ pub const Object = union(enum) {
     pub const Null = &null_object;
     pub const True = &true_object;
     pub const False = &false_object;
+
+    pub const Function = struct {
+        parameters: std.ArrayList(ast.Identifier),
+        body: *ast.Block,
+        env: *Environment,
+
+        pub fn print(self: Function, writer: anytype) !void {
+            try writer.print("fn(", .{});
+            for (self.parameters.items, 1..) |param, i| {
+                try writer.print("{s}", .{param.value});
+                if (i < self.parameters.items.len) {
+                    try writer.print(", ", .{});
+                }
+            }
+            try writer.print(")", .{});
+        }
+    };
 
     pub fn typeName(self: Object) []const u8 {
         return @tagName(self);
@@ -29,6 +50,7 @@ pub const Object = union(enum) {
                 try writer.print("{s}", .{str});
             },
             .error_ => |error_| try writer.print("\"{s}\"", .{error_}),
+            .function => |function| try function.print(writer),
             .return_ => unreachable,
         }
     }
