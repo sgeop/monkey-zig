@@ -2,7 +2,7 @@ const std = @import("std");
 
 const ast = @import("ast.zig");
 const Environment = @import("environment.zig").Environment;
-const RuntimeError = @import("eval.zig").RuntimeError;
+const RuntimeError = @import("evaluator.zig").RuntimeError;
 
 pub const Object = union(enum) {
     integer: i64,

@@ -1,7 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
-const object = @import("object.zig");
-const builtin = @import("builtin.zig");
+const Object = @import("value.zig").Object;
+const Environment = @import("environment.zig").Environment;
 
 pub const RuntimeError = error{
     OutOfMemory,
@@ -13,255 +13,352 @@ pub const RuntimeError = error{
 pub const Evaluator = struct {
     allocator: std.mem.Allocator,
 
-    const Self = @This();
+    pub const Self = @This();
 
     pub fn new(allocator: std.mem.Allocator) Self {
         return .{ .allocator = allocator };
     }
 
-    pub fn eval(self: *Self, node: ast.Node) RuntimeError!*object.Object {
+    pub fn eval(self: *Self, node: ast.Node, env: *Environment) RuntimeError!*Object {
         switch (node) {
-            .program => |program| return try self.evalProgram(program),
-            .statement => |statement| return try self.evalStatement(statement),
-            .expression => |expression| return try self.evalExpression(expression),
+            .program => |program| return try self.evalProgram(program, env),
+            .statement => |statement| return try self.evalStatement(statement, env),
+            .expression => |expression| return try self.evalExpression(expression, env),
         }
     }
 
-    pub fn evalProgram(self: *Self, program: *ast.Program) RuntimeError!*object.Object {
-        var result: *object.Object = &builtin.NULL_OBJECT;
-        var i: usize = 0;
-        while (i < program.statements.items.len) : (i += 1) {
-            const evaled = try self.evalStatement(&program.statements.items[i]);
-            switch (evaled.*) {
-                .return_ => |return_| return return_.value,
-                else => result = evaled,
+    pub fn evalProgram(self: *Self, program: *ast.Program, env: *Environment) RuntimeError!*Object {
+        var result: *Object = Object.Null;
+        for (program.statements.items) |*statement| {
+            const evaluated = try self.evalStatement(statement, env);
+            switch (evaluated.*) {
+                .return_ => |return_| return return_,
+                .error_ => return evaluated,
+                else => result = evaluated,
             }
         }
 
         return result;
     }
 
-    pub fn evalStatement(self: *Self, statement: *ast.Statement) RuntimeError!*object.Object {
+    pub fn evalStatement(self: *Self, statement: *ast.Statement, env: *Environment) RuntimeError!*Object {
         switch (statement.*) {
-            .expression_statement => |expression_statement| return self.evalExpression(expression_statement.expression),
+            .expression_statement => |expression_statement| return self.evalExpression(expression_statement.expression, env),
+            .let => |let| {
+                const value = try self.evalExpression(let.value, env);
+                switch (value.*) {
+                    .error_ => return value,
+                    else => {},
+                }
+
+                const ident = std.fmt.allocPrint(self.allocator, "{s}", .{let.name.value}) catch return RuntimeError.OutOfMemory;
+
+                try env.set(ident, value);
+                return Object.Null;
+            },
+            .block => |*block| return self.evalBlock(block, env),
             .return_ => |return_| {
-                const value = try self.evalExpression(return_.value);
-
-                const obj = self.allocator.create(object.Object) catch return RuntimeError.OutOfMemory;
-                obj.* = object.Object{
-                    .return_ = object.Return{
-                        .value = value,
-                    },
-                };
-
-                return obj;
+                const result = try self.evalExpression(return_.value, env);
+                return Object.new(self.allocator, Object{ .return_ = result });
             },
-            else => return RuntimeError.IllegalValue,
         }
     }
 
-    pub fn evalExpression(self: *Self, expression: *ast.Expression) RuntimeError!*object.Object {
-        switch (expression.*) {
-            .integer => |integer| {
-                const obj = object.Integer.create(self.allocator, integer.value);
-                return obj;
-            },
-            .prefix_expression => |prefix_expression| {
-                const right = try self.evalExpression(prefix_expression.right);
-
-                return try self.evalPrefixExpression(prefix_expression.operator, right);
-            },
-            .infix_expression => |infix_expression| {
-                const right = try self.evalExpression(infix_expression.right);
-                const left = try self.evalExpression(infix_expression.left);
-
-                return try self.evalInfixExpression(&infix_expression.operator, left, right);
-            },
-            .if_ => |*if_| return try self.evalIfExpression(if_),
-            else => return RuntimeError.IllegalValue,
-        }
-    }
-
-    fn evalBlock(self: *Self, block: *ast.Block) RuntimeError!*object.Object {
-        var result: *object.Object = &builtin.NULL_OBJECT;
-        var i: usize = 0;
-        while (i < block.statements.items.len) : (i += 1) {
-            result = try self.evalStatement(&block.statements.items[i]);
+    fn evalBlock(self: *Self, block: *ast.Block, env: *Environment) RuntimeError!*Object {
+        var result: *Object = Object.Null;
+        for (block.statements.items) |*statement| {
+            const evaluated = try self.evalStatement(statement, env);
+            switch (evaluated.*) {
+                .return_, .error_ => return evaluated,
+                else => result = evaluated,
+            }
         }
 
         return result;
     }
 
-    fn evalIfExpression(self: *Self, ifexp: *ast.If) RuntimeError!*object.Object {
-        const condition = try self.evalExpression(ifexp.*.condition);
+    pub fn evalExpression(self: *Self, expression: *ast.Expression, env: *Environment) RuntimeError!*Object {
+        switch (expression.*) {
+            .integer => |integer| return Object.new(self.allocator, Object{ .integer = integer.value }),
+            .boolean => |boolean| return Object.new(self.allocator, Object{ .boolean = boolean.value }),
+            .identifier => |identifier| return try self.evalIdentifier(&identifier, env),
+            .prefix_expression => |prefix_expression| {
+                const right = try self.evalExpression(prefix_expression.right, env);
+                return self.evalPrefixExpression(prefix_expression.operator, right);
+            },
+            .infix_expression => |infix_expression| {
+                const left = try self.evalExpression(infix_expression.left, env);
+                if (left.isError()) {
+                    return left;
+                }
+
+                const right = try self.evalExpression(infix_expression.right, env);
+                if (right.isError()) {
+                    return right;
+                }
+
+                return try self.evalInfixExpression(&infix_expression.operator, left, right);
+            },
+            .if_ => |*if_| return self.evalIfExpression(if_, env),
+            .function => |*function| return self.newFunction(function.parameters, &function.body, env),
+            .call => |*call| {
+                const function = try self.evalExpression(call.callee, env);
+                switch (function.*) {
+                    .error_ => return function,
+                    else => {},
+                }
+
+                var args = std.ArrayList(*Object).init(self.allocator);
+                for (call.arguments.items) |*arg| {
+                    const evaled = try self.evalExpression(arg, env);
+                    switch (evaled.*) {
+                        .error_ => return evaled,
+                        else => {},
+                    }
+
+                    args.append(evaled) catch return RuntimeError.OutOfMemory;
+                }
+
+                return try self.applyFunction(function, args);
+            },
+        }
+    }
+
+    pub fn evalIfExpression(self: *Self, if_expr: *ast.If, env: *Environment) RuntimeError!*Object {
+        const condition = try self.evalExpression(if_expr.*.condition, env);
 
         if (isTruthy(condition)) {
-            return try self.evalBlock(&ifexp.*.then_branch);
-        } else if (ifexp.*.else_branch) |*else_branch| {
-            return try self.evalBlock(else_branch);
+            return self.evalBlock(&if_expr.*.then_branch, env);
+        } else if (if_expr.*.else_branch) |*else_branch| {
+            return self.evalBlock(else_branch, env);
         } else {
-            return &builtin.NULL_OBJECT;
+            return Object.Null;
         }
     }
 
-    fn evalPrefixExpression(self: *Self, operator: ast.Operator, right: *object.Object) RuntimeError!*object.Object {
+    pub fn evalIdentifier(self: *Self, identifier: *const ast.Identifier, env: *Environment) RuntimeError!*Object {
+        const value = env.get(identifier.*.value);
+        if (value) |val| {
+            return val;
+        }
+
+        var identifiers = std.ArrayList(u8).init(self.allocator);
+        defer identifiers.deinit();
+
+        var writer = identifiers.writer();
+        var it = env.*.store.iterator();
+        while (it.next()) |kv| {
+            try writer.print("Key: {s} Value: ", .{kv.key_ptr.*});
+            try kv.value_ptr.*.repr(writer);
+            try writer.print("\n", .{});
+        }
+
+        return self.newError("identifier not found: {s} in... {s}", .{ identifier.*.value, identifiers.items });
+    }
+
+    pub fn applyFunction(self: *Self, function: *Object, arguments: std.ArrayList(*Object)) !*Object {
+        switch (function.*) {
+            .function => |*func| {
+                if (func.parameters.items.len != arguments.items.len) {
+                    return self.newError(
+                        "Wrong number of arguments: expected={} got={}",
+                        .{ func.parameters.items.len, arguments.items.len },
+                    );
+                }
+
+                const extended_env = try self.extendFunctionEnv(func, arguments);
+                const evaled = try self.evalBlock(func.body, extended_env);
+
+                return switch (evaled.*) {
+                    .return_ => |return_val| return_val,
+                    else => evaled,
+                };
+            },
+            else => return self.newError("Not a function: {s}", .{function.typeName()}),
+        }
+    }
+
+    fn extendFunctionEnv(self: Self, function: *Object.Function, arguments: std.ArrayList(*Object)) RuntimeError!*Environment {
+        const env = self.allocator.create(Environment) catch return RuntimeError.OutOfMemory;
+        env.* = Environment.newEnclosed(self.allocator, function.*.env);
+        for (function.parameters.items, 0..) |param, i| {
+            try env.set(param.value, arguments.items[i]);
+        }
+
+        return env;
+    }
+
+    pub fn evalPrefixExpression(self: *Self, operator: ast.Operator, right: *Object) RuntimeError!*Object {
         switch (operator) {
             .bang => return evalBangOperatorExpression(right),
-            .minus => return try self.evalMinusPrefixOperatorExpression(right),
-            else => return RuntimeError.NotImplemented,
+            .minus => return switch (right.*) {
+                .integer => |integer| Object.new(self.allocator, Object{ .integer = -integer }),
+                else => self.newError("unknown operator: -{s}", .{right.typeName()}),
+            },
+            else => {
+                return self.newError("unknown operator: {s}{s}", .{ operator.str(), right.typeName() });
+            },
         }
     }
 
-    fn evalInfixExpression(self: *Self, operator: *const ast.Operator, left: *object.Object, right: *object.Object) RuntimeError!*object.Object {
+    pub fn evalInfixExpression(self: *Self, operator: *const ast.Operator, left: *Object, right: *Object) RuntimeError!*Object {
         switch (left.*) {
             .integer => |left_int| switch (right.*) {
-                .integer => |right_int| return try self.evalIntegerInfixExpression(operator, &left_int, &right_int),
-                else => return RuntimeError.TypeMismatch,
+                .integer => |right_int| {
+                    const result = try evalIntegerInfixExpression(operator, left_int, right_int);
+                    return Object.new(self.allocator, result);
+                },
+                else => return self.newError("Type mismatch: {s} {s} {s}", .{ left.typeName(), operator.str(), right.typeName() }),
             },
-            else => return RuntimeError.NotImplemented,
+            else => switch (operator.*) {
+                .equal => return Object.new(self.allocator, .{ .boolean = left.compare(right.*) }),
+                .not_equal => return Object.new(self.allocator, .{ .boolean = !left.compare(right.*) }),
+                else => if (std.mem.eql(u8, left.typeName(), right.typeName())) {
+                    return self.newError("unknown operator: {s} {s} {s}", .{ left.typeName(), operator.str(), right.typeName() });
+                } else {
+                    return self.newError("Type mismatch: {s} {s} {s}", .{ left.typeName(), operator.str(), right.typeName() });
+                },
+            },
         }
     }
 
-    fn evalMinusPrefixOperatorExpression(self: *Self, right: *object.Object) RuntimeError!*object.Object {
-        switch (right.*) {
-            .integer => |integer| return object.Integer.create(self.allocator, -integer.value) catch return RuntimeError.OutOfMemory,
-            else => return RuntimeError.NotImplemented,
-        }
-    }
-
-    fn evalIntegerInfixExpression(
-        self: *Self,
+    pub fn evalIntegerInfixExpression(
         operator: *const ast.Operator,
-        left: *const object.Integer,
-        right: *const object.Integer,
-    ) RuntimeError!*object.Object {
-        switch (operator.*) {
-            .plus => return object.Integer.create(self.allocator, left.*.value + right.*.value),
-            .minus => return object.Integer.create(self.allocator, left.*.value - right.*.value),
-            .asterisk => return object.Integer.create(self.allocator, left.*.value * right.*.value),
-            .slash => return object.Integer.create(self.allocator, @divFloor(left.*.value, right.*.value)),
-            .lt => return nativeBoolToBooleanObject(left.*.value < right.*.value),
-            .gt => return nativeBoolToBooleanObject(left.*.value > right.*.value),
-            .equal => return nativeBoolToBooleanObject(left.*.value == right.*.value),
-            .not_equal => return nativeBoolToBooleanObject(left.*.value != right.*.value),
-            else => return RuntimeError.NotImplemented,
-        }
+        left: i64,
+        right: i64,
+    ) RuntimeError!Object {
+        return switch (operator.*) {
+            .plus => .{ .integer = left + right },
+            .minus => .{ .integer = left - right },
+            .asterisk => .{ .integer = left * right },
+            .slash => .{ .integer = @divFloor(left, right) },
+            .lt => .{ .boolean = left < right },
+            .gt => .{ .boolean = left > right },
+            .equal => .{ .boolean = left == right },
+            .not_equal => .{ .boolean = left != right },
+            else => RuntimeError.IllegalValue,
+        };
     }
 
-    fn evalBangOperatorExpression(right: *object.Object) *object.Object {
-        switch (right.*) {
-            .boolean => |boolean| {
-                return if (boolean.value) &builtin.FALSE_OBJECT else return &builtin.TRUE_OBJECT;
-            },
-            .null_ => return &builtin.TRUE_OBJECT,
-            else => return &builtin.FALSE_OBJECT,
-        }
+    pub fn evalBangOperatorExpression(right: *Object) *Object {
+        return switch (right.*) {
+            .boolean => |boolean| if (boolean) Object.False else Object.True,
+            .null_ => Object.True,
+            else => Object.False,
+        };
     }
 
-    fn nativeBoolToBooleanObject(input: bool) *object.Object {
-        return if (input) &builtin.TRUE_OBJECT else &builtin.FALSE_OBJECT;
+    fn isTruthy(object: *Object) bool {
+        return switch (object.*) {
+            .boolean => |boolean| boolean,
+            .null_ => false,
+            else => true,
+        };
     }
 
-    fn isTruthy(obj: *object.Object) bool {
-        switch (obj.*) {
-            .boolean => |boolean| return boolean.value,
-            .null_ => return false,
-            else => return true,
-        }
+    fn newError(self: *Self, comptime fmt: []const u8, args: anytype) RuntimeError!*Object {
+        const message = std.fmt.allocPrint(self.allocator, fmt, args) catch return RuntimeError.OutOfMemory;
+        return Object.new(self.allocator, Object{ .error_ = message });
+    }
+
+    fn newFunction(self: *Self, parameters: std.ArrayList(ast.Identifier), body: *ast.Block, env: *Environment) RuntimeError!*Object {
+        const function_ptr = self.allocator.create(Object) catch return RuntimeError.OutOfMemory;
+        function_ptr.* = Object{
+            .function = Object.Function{ .parameters = parameters, .body = body, .env = env },
+        };
+        return function_ptr;
     }
 };
 
-///////////////// TESTS //////////////////
+//////////////// TESTS ////////////////
 const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
 
-fn testEvaluate(input: []const u8, alloc: std.mem.Allocator) !*object.Object {
+fn evaluate(input: []const u8, allocator: std.mem.Allocator) !*Object {
     var lexer = Lexer.new(input);
-    var parser = Parser.new(&lexer, alloc);
+    var parser = Parser.new(&lexer, allocator);
     var program = try parser.parseProgram();
+    var evaluator = Evaluator.new(allocator);
+    var env = Environment.new(allocator);
 
-    var evaluator = Evaluator.new(alloc);
-    const result = evaluator.evalProgram(&program);
-    return result;
-    // const result = alloc.create(object.Object);
+    return evaluator.evalProgram(&program, &env);
 }
 
-fn expectInteger(expected: i64, actual: *object.Object) !void {
-    switch (actual.*) {
-        .integer => |integer| try std.testing.expectEqual(expected, integer.value),
-        else => return error.TypeMismatch,
-    }
-}
-
-fn expectBoolean(expected: bool, actual: *object.Object) !void {
-    switch (actual.*) {
-        .boolean => |boolean| try std.testing.expectEqual(expected, boolean.value),
-        else => return error.TypeMismatch,
-    }
-}
-
-fn TestExpect(comptime T: type) type {
-    return struct {
-        input: []const u8,
-        expected: T,
-    };
-}
-
-test "Evaluate integers" {
+test "evaluate expressions" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const test_ints: []const TestExpect(i64) = &.{
-        .{ .input = "200", .expected = 200 },
-        .{ .input = "1", .expected = 1 },
-        .{ .input = "1000", .expected = 1000 },
-        .{ .input = "-50", .expected = -50 },
-        .{ .input = "10 - 10", .expected = 0 },
-        .{ .input = "50 / 2 * 2 + 10", .expected = 60 },
-        .{ .input = "if (1 != 1) { 55 } else { 11 }", .expected = 11 },
-        .{ .input = "if (10) { 2 } else { 1 }", .expected = 2 },
+    const values: []const struct { input: []const u8, expected: Object } = &.{
+        .{ .input = "11", .expected = .{ .integer = 11 } },
+        .{ .input = "-100", .expected = .{ .integer = -100 } },
+        .{ .input = "10 + 10", .expected = .{ .integer = 20 } },
+        .{ .input = "10 * 10 - 18", .expected = .{ .integer = 82 } },
+        .{ .input = "!(0 > 1)", .expected = .{ .boolean = true } },
+        .{ .input = "if (1 != 1) { 400 } else { 200 }", .expected = .{ .integer = 200 } },
+        .{ .input = "return 2*2; 2;", .expected = .{ .integer = 4 } },
+        .{ .input = "2; return 2*2;", .expected = .{ .integer = 4 } },
+        .{ .input = "10 + true", .expected = .{ .error_ = "Type mismatch: integer + boolean" } },
+        .{ .input = "true == true", .expected = .{ .boolean = true } },
+        .{ .input = "true - 1", .expected = .{ .error_ = "Type mismatch: boolean - integer" } },
     };
 
-    for (test_ints) |v| {
-        const actual = try testEvaluate(v.input, arena.allocator());
-        try expectInteger(v.expected, actual);
+    for (values) |value| {
+        var expected_repr = std.ArrayList(u8).init(arena.allocator());
+        try value.expected.typedRepr(expected_repr.writer());
+
+        const actual = try evaluate(value.input, arena.allocator());
+        var actual_repr = std.ArrayList(u8).init(arena.allocator());
+        try actual.typedRepr(actual_repr.writer());
+
+        std.debug.print("input: {s}, expected: {s}, actual: {s}\n", .{ value.input, expected_repr.items, actual_repr.items });
+        // compare object values
+        try std.testing.expect(actual.compare(value.expected));
+        // compare typed repr strings
+        try std.testing.expectEqualStrings(expected_repr.items, actual_repr.items);
     }
-    // switch (result.*) {
-    //     .integer => |integer| try std.testing.expectEqual(@as(i64, integer.value), 1000),
-    //     else => try std.testing.expect(false),
-    // }
+
+    const object = try evaluate("11", arena.allocator());
+    try std.testing.expectEqual(11, object.integer);
 }
 
-test "Evaluate booleans" {
+test "evaluate let statements" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const test_boolean: []const TestExpect(bool) = &.{
-        .{ .input = "1000 > 100", .expected = true },
-        .{ .input = "-22 != -22", .expected = false },
+    const values: []const struct { input: []const u8, expected: Object } = &.{
+        .{ .input = "let a = 5; a;", .expected = .{ .integer = 5 } },
+        .{ .input = "let a = 5 * 5; a;", .expected = .{ .integer = 25 } },
+        .{ .input = "let a = 5; let b = a + 1; b * 2;", .expected = .{ .integer = 12 } },
     };
 
-    for (test_boolean) |v| {
-        // try testval.evalExpect(arena.allocator());
-        const actual = try testEvaluate(v.input, arena.allocator());
-        try expectBoolean(v.expected, actual);
+    for (values) |value| {
+        const actual = try evaluate(value.input, arena.allocator());
+        std.debug.print("input: {s}, expecting: {}, actual {}\n", .{ value.input, value.expected, actual });
+        try std.testing.expect(actual.compare(value.expected));
     }
 }
 
-test "Evaluate return stmt" {
+test "evaluate functions" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const test_return_ints: []const TestExpect(i64) = &.{
-        .{ .input = "return 10;", .expected = 10 },
-        .{ .input = "return 2*2;", .expected = 4 },
-        .{ .input = "return 2*2;", .expected = 4 },
-        .{ .input = "return 2*5; 9;", .expected = 10 },
-        .{ .input = "9; return 2*5;", .expected = 10 },
+    const input = "fn(x) { x + 2; };";
+    const evaled = try evaluate(input, arena.allocator());
+
+    try std.testing.expect(std.mem.eql(u8, evaled.typeName(), "function"));
+
+    var buf = std.ArrayList(u8).init(arena.allocator());
+    try evaled.function.print(buf.writer());
+
+    std.debug.print("input: {s}, evaluated {s}\n", .{ input, buf.items });
+
+    const values: []const struct { input: []const u8, expected: Object } = &.{
+        .{ .input = "let double = fn(x) { x * 2; }; double(10);", .expected = .{ .integer = 20 } },
     };
 
-    for (test_return_ints) |v| {
-        const actual = try testEvaluate(v.input, arena.allocator());
-        try expectInteger(v.expected, actual);
+    for (values) |value| {
+        const actual = try evaluate(value.input, arena.allocator());
+        std.debug.print("input: {s}, expecting: {}, actual {}\n", .{ value.input, value.expected, actual });
+        try std.testing.expect(actual.compare(value.expected));
     }
 }

@@ -3,7 +3,7 @@ const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("token.zig").Token;
 const Parser = @import("parser.zig").Parser;
 const Environment = @import("environment.zig").Environment;
-const Evaluator = @import("eval.zig").Evaluator;
+const Evaluator = @import("evaluator.zig").Evaluator;
 
 const PROMPT = ">> ";
 

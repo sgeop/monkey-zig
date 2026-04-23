@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const Object = @import("value.zig").Object;
-const RuntimeError = @import("eval.zig").RuntimeError;
+const RuntimeError = @import("evaluator.zig").RuntimeError;
 
 pub const Environment = struct {
     outer: ?*Environment,
